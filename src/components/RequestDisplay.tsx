@@ -40,11 +40,11 @@ const SActions = styled.div`
 
 class RequestDisplay extends React.Component<any, any> {
   public render() {
-    const { payload, peerMeta, approveRequest, rejectRequest, renderPayload } = this.props;
+    const { request, peerMeta, approveRequest, rejectRequest, renderRequest } = this.props;
 
-    const params: IRequestRenderParams[] = renderPayload(payload);
-    console.log("RENDER", "method", payload.method);
-    console.log("RENDER", "params", payload.params);
+    const params: IRequestRenderParams[] = renderRequest(request);
+    console.log("RENDER", "method", request.method);
+    console.log("RENDER", "params", request.params);
     console.log("RENDER", "formatted", params);
     return (
       <Column>

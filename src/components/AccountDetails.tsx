@@ -1,8 +1,7 @@
 import * as React from "react";
 import styled from "styled-components";
 import Dropdown from "../components/Dropdown";
-import { IChainData } from "../helpers/types";
-import { ellipseAddress, getViewportDimensions } from "../helpers/utilities";
+import { ellipseAddress, getViewportDimensions, getNetworkData } from "../helpers/utilities";
 import { responsive } from "../styles";
 import Blockie from "./Blockie";
 
@@ -25,50 +24,51 @@ const SAddressDropdownWrapper = styled.div`
 `;
 
 interface IAccountDetailsProps {
-  chains: IChainData[];
-  updateAddress?: any;
-  updateChain?: any;
+  chain: string;
+  networks: string[];
+  network: string;
   accounts: string[];
-  activeIndex: number;
-  address: string;
-  chainId: number;
+  account: string;
+  updateNetwork?: any;
+  updateAccount?: any;
 }
 
 const AccountDetails = (props: IAccountDetailsProps) => {
-  const { chains, chainId, address, activeIndex, accounts, updateAddress, updateChain } = props;
+  const { chain, networks, network, accounts, account, updateNetwork, updateAccount } = props;
   const windowWidth = getViewportDimensions().x;
   const maxWidth = 468;
   const maxChar = 12;
   const ellipseLength =
     windowWidth > maxWidth ? maxChar : Math.floor(windowWidth * (maxChar / maxWidth));
-  const accountsMap = accounts.map((addr: string, index: number) => ({
-    index,
+  const accountsMap = accounts.map((addr: string) => ({
+    address: addr,
     display_address: ellipseAddress(addr, ellipseLength),
   }));
+  const networksMap = networks.map(network => getNetworkData(chain, network));
   return (
     <React.Fragment>
       <SSection>
         <h6>{"Account"}</h6>
         <SAddressDropdownWrapper>
-          <SBlockie size={40} address={address} />
+          <SBlockie size={40} account={account} />
           <Dropdown
             monospace
-            selected={activeIndex}
+            selected={account}
             options={accountsMap}
             displayKey={"display_address"}
-            targetKey={"index"}
-            onChange={updateAddress}
+            targetKey={"address"}
+            onChange={updateAccount}
           />
         </SAddressDropdownWrapper>
       </SSection>
       <SSection>
         <h6>{"Network"}</h6>
         <Dropdown
-          selected={chainId}
-          options={chains}
+          selected={network}
+          options={networksMap}
           displayKey={"name"}
-          targetKey={"chain_id"}
-          onChange={updateChain}
+          targetKey={"network"}
+          onChange={updateNetwork}
         />
       </SSection>
     </React.Fragment>

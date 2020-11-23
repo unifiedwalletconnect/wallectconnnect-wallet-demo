@@ -1,6 +1,6 @@
 import * as React from "react";
 import styled from "styled-components";
-import WalletConnect from "@walletconnect/client";
+import WalletConnect from "@unifiedwalletconnect/client";
 import Button from "./components/Button";
 import Card from "./components/Card";
 import Input from "./components/Input";
@@ -11,10 +11,10 @@ import RequestDisplay from "./components/RequestDisplay";
 import RequestButton from "./components/RequestButton";
 import AccountDetails from "./components/AccountDetails";
 import QRCodeScanner, { IQRCodeValidateResponse } from "./components/QRCodeScanner";
-import { DEFAULT_CHAIN_ID, DEFAULT_ACTIVE_INDEX } from "./constants/default";
+import { IWallet } from "./helpers/types";
 import { getCachedSession } from "./helpers/utilities";
-import { getAppControllers } from "./controllers";
 import { getAppConfig } from "./config";
+import { getWallet } from "./wallets";
 
 const SContainer = styled.div`
   display: flex;
@@ -106,10 +106,11 @@ const SRequestButton = styled(RequestButton)`
 `;
 
 export interface IAppState {
-  loading: boolean;
   scanner: boolean;
-  connector: WalletConnect | null;
   uri: string;
+  connected: boolean;
+  connector: WalletConnect | null;
+  wallet: IWallet | null;
   peerMeta: {
     description: string;
     url: string;
@@ -117,24 +118,21 @@ export interface IAppState {
     name: string;
     ssl: boolean;
   };
-  connected: boolean;
-  chainId: number;
+  chain: string;
+  networks: string[];
+  network: string;
   accounts: string[];
-  activeIndex: number;
-  address: string;
+  account: string;
   requests: any[];
-  results: any[];
-  payload: any;
+  request: any;
 }
 
-export const DEFAULT_ACCOUNTS = getAppControllers().wallet.getAccounts();
-export const DEFAULT_ADDRESS = DEFAULT_ACCOUNTS[DEFAULT_ACTIVE_INDEX];
-
 export const INITIAL_STATE: IAppState = {
-  loading: false,
   scanner: false,
-  connector: null,
   uri: "",
+  connected: false,
+  connector: null,
+  wallet: null,
   peerMeta: {
     description: "",
     url: "",
@@ -142,14 +140,13 @@ export const INITIAL_STATE: IAppState = {
     name: "",
     ssl: false,
   },
-  connected: false,
-  chainId: getAppConfig().chainId || DEFAULT_CHAIN_ID,
-  accounts: DEFAULT_ACCOUNTS,
-  address: DEFAULT_ADDRESS,
-  activeIndex: DEFAULT_ACTIVE_INDEX,
+  chain: "",
+  networks: [],
+  network: "",
+  accounts: [],
+  account: "",
   requests: [],
-  results: [],
-  payload: null,
+  request: null,
 };
 
 class App extends React.Component<{}> {
@@ -166,74 +163,70 @@ class App extends React.Component<{}> {
   }
 
   public init = async () => {
-    let { activeIndex, chainId } = this.state;
-
     const session = getCachedSession();
 
-    if (!session) {
-      await getAppControllers().wallet.init(activeIndex, chainId);
-    } else {
+    if (session) {
       const connector = new WalletConnect({ session });
 
-      const { connected, accounts, peerMeta } = connector;
-
-      const address = accounts[0];
-
-      activeIndex = accounts.indexOf(address);
-      chainId = connector.chainId;
-
-      await getAppControllers().wallet.init(activeIndex, chainId);
-
-      await this.setState({
+      const {
         connected,
-        connector,
-        address,
-        activeIndex,
-        accounts,
-        chainId,
         peerMeta,
-      });
+        chain,
+        network: connectorNetwork,
+        accounts: [connectorAccount],
+      } = connector;
 
-      this.subscribeToEvents();
+      if (connected) {
+        const wallet = getWallet(chain);
+        wallet.update(connectorNetwork, connectorAccount);
+        const { networks, network, accounts, account } = wallet;
+
+        await this.setState({
+          connected,
+          connector,
+          wallet,
+          peerMeta,
+          chain,
+          networks,
+          network,
+          accounts,
+          account,
+        });
+
+        this.subscribeToEvents();
+        this.updateSession({});
+      }
     }
-    await getAppConfig().events.init(this.state, this.bindedSetState);
   };
-
-  public bindedSetState = (newState: Partial<IAppState>) => this.setState(newState);
 
   public initWalletConnect = async () => {
     const { uri } = this.state;
 
-    this.setState({ loading: true });
-
     try {
       const connector = new WalletConnect({ uri });
-
-      if (!connector.connected) {
-        await connector.createSession();
-      }
+      const chain = connector.chain;
 
       await this.setState({
-        loading: false,
         connector,
         uri: connector.uri,
+        chain,
       });
 
       this.subscribeToEvents();
     } catch (error) {
-      this.setState({ loading: false });
-
       throw error;
     }
   };
 
   public approveSession = () => {
     console.log("ACTION", "approveSession");
-    const { connector, chainId, address } = this.state;
+    const { connector, chain } = this.state;
+    const wallet = getWallet(chain);
+    const { networks, network, accounts, account } = wallet;
     if (connector) {
-      connector.approveSession({ chainId, accounts: [address] });
+      connector.approveSession({ network, accounts: [account] });
     }
-    this.setState({ connector });
+    this.setState({ connector, wallet, networks, network, accounts, account });
   };
 
   public rejectSession = () => {
@@ -284,6 +277,7 @@ class App extends React.Component<{}> {
       });
 
       connector.on("call_request", async (error, payload) => {
+        console.log(payload);
         // tslint:disable-next-line
         console.log("EVENT", "call_request", "method", payload.method);
         console.log("EVENT", "call_request", "params", payload.params);
@@ -292,7 +286,19 @@ class App extends React.Component<{}> {
           throw error;
         }
 
-        await getAppConfig().rpcEngine.router(payload, this.state, this.bindedSetState);
+        const { wallet } = this.state;
+        if (wallet) {
+          if (!wallet.isSigningRequest(payload)) {
+            try {
+              const result = await wallet.handleNonSigningRequest(payload);
+              connector.approveRequest({ id: payload.id, result });
+            } catch (error) {
+              connector.rejectRequest({ id: payload.id, error });
+            }
+          } else {
+            this.setState({ requests: [...this.state.requests, payload] });
+          }
+        }
       });
 
       connector.on("connect", (error, payload) => {
@@ -316,49 +322,39 @@ class App extends React.Component<{}> {
       });
 
       if (connector.connected) {
-        const { chainId, accounts } = connector;
-        const index = 0;
-        const address = accounts[index];
-        getAppControllers().wallet.update(index, chainId);
-        this.setState({
-          connected: true,
-          address,
-          chainId,
-        });
+        this.setState({ connected: true });
       }
 
       this.setState({ connector });
     }
   };
 
-  public updateSession = async (sessionParams: { chainId?: number; activeIndex?: number }) => {
-    const { connector, chainId, accounts, activeIndex } = this.state;
-    const newChainId = sessionParams.chainId || chainId;
-    const newActiveIndex = sessionParams.activeIndex || activeIndex;
-    const address = accounts[newActiveIndex];
+  public updateSession = async (sessionParams: { network?: string; account?: string }) => {
+    const { connector, wallet, network, account } = this.state;
+    const newNetwork = sessionParams.network || network;
+    const newAccount = sessionParams.account || account;
     if (connector) {
       connector.updateSession({
-        chainId: newChainId,
-        accounts: [address],
+        network: newNetwork,
+        accounts: [newAccount],
       });
+    }
+    if (wallet) {
+      wallet.update(network, account);
     }
     await this.setState({
       connector,
-      address,
-      accounts,
-      activeIndex: newActiveIndex,
-      chainId: newChainId,
+      network: newNetwork,
+      account: newAccount,
     });
-    await getAppControllers().wallet.update(newActiveIndex, newChainId);
-    await getAppConfig().events.update(this.state, this.bindedSetState);
   };
 
-  public updateChain = async (chainId: number | string) => {
-    await this.updateSession({ chainId: Number(chainId) });
+  public updateNetwork = async (network: string) => {
+    await this.updateSession({ network });
   };
 
-  public updateAddress = async (activeIndex: number) => {
-    await this.updateSession({ activeIndex });
+  public updateAccount = async (account: string) => {
+    await this.updateSession({ account });
   };
 
   public toggleScanner = () => {
@@ -404,29 +400,26 @@ class App extends React.Component<{}> {
 
   public onQRCodeClose = () => this.toggleScanner();
 
-  public openRequest = (request: any) => this.setState({ payload: request });
+  public openRequest = (request: any) => this.setState({ request });
 
   public closeRequest = async () => {
-    const { requests, payload } = this.state;
-    const filteredRequests = requests.filter(request => request.id !== payload.id);
+    const { requests, request } = this.state;
+    const filteredRequests = requests.filter(request_ => request_.id !== request.id);
     await this.setState({
       requests: filteredRequests,
-      payload: null,
+      request: null,
     });
   };
 
   public approveRequest = async () => {
-    const { connector, payload } = this.state;
+    const { connector, wallet, request } = this.state;
 
-    try {
-      await getAppConfig().rpcEngine.signer(payload, this.state, this.bindedSetState);
-    } catch (error) {
-      console.error(error);
-      if (connector) {
-        connector.rejectRequest({
-          id: payload.id,
-          error: { message: "Failed or Rejected Request" },
-        });
+    if (wallet && connector) {
+      try {
+        const result = await wallet.handleNonSigningRequest(request);
+        connector.approveRequest({ id: request.id, result });
+      } catch (error) {
+        connector.rejectRequest({ id: request.id, error });
       }
     }
 
@@ -435,11 +428,11 @@ class App extends React.Component<{}> {
   };
 
   public rejectRequest = async () => {
-    const { connector, payload } = this.state;
+    const { connector, request } = this.state;
     if (connector) {
       connector.rejectRequest({
-        id: payload.id,
-        error: { message: "Failed or Rejected Request" },
+        id: request.id,
+        error: { message: "Request is rejected by user" },
       });
     }
     await this.closeRequest();
@@ -448,23 +441,27 @@ class App extends React.Component<{}> {
 
   public render() {
     const {
-      peerMeta,
       scanner,
       connected,
-      activeIndex,
+      wallet,
+      peerMeta,
+      chain,
+      networks,
+      network,
       accounts,
-      address,
-      chainId,
+      account,
       requests,
-      payload,
+      request,
     } = this.state;
+    console.log(this.state);
     return (
       <React.Fragment>
         <SContainer>
           <Header
             connected={connected}
-            address={address}
-            chainId={chainId}
+            chain={chain}
+            network={network}
+            account={account}
             killSession={this.killSession}
           />
           <SContent>
@@ -483,15 +480,6 @@ class App extends React.Component<{}> {
                   </Column>
                 ) : (
                   <Column>
-                    <AccountDetails
-                      chains={getAppConfig().chains}
-                      address={address}
-                      activeIndex={activeIndex}
-                      chainId={chainId}
-                      accounts={accounts}
-                      updateAddress={this.updateAddress}
-                      updateChain={this.updateChain}
-                    />
                     <SActionsColumn>
                       <SButton onClick={this.toggleScanner}>{`Scan`}</SButton>
                       {getAppConfig().styleOpts.showPasteUri && (
@@ -503,16 +491,16 @@ class App extends React.Component<{}> {
                     </SActionsColumn>
                   </Column>
                 )
-              ) : !payload ? (
+              ) : !request ? (
                 <Column>
                   <AccountDetails
-                    chains={getAppConfig().chains}
-                    address={address}
-                    activeIndex={activeIndex}
-                    chainId={chainId}
+                    chain={chain}
+                    networks={networks}
+                    network={network}
                     accounts={accounts}
-                    updateAddress={this.updateAddress}
-                    updateChain={this.updateChain}
+                    account={account}
+                    updateNetwork={this.updateNetwork}
+                    updateAccount={this.updateAccount}
                   />
                   {peerMeta && peerMeta.name && (
                     <>
@@ -538,9 +526,9 @@ class App extends React.Component<{}> {
                 </Column>
               ) : (
                 <RequestDisplay
-                  payload={payload}
+                  request={request}
                   peerMeta={peerMeta}
-                  renderPayload={(payload: any) => getAppConfig().rpcEngine.render(payload)}
+                  renderRequest={(request: any) => (wallet ? wallet.renderRequest(request) : [])}
                   approveRequest={this.approveRequest}
                   rejectRequest={this.rejectRequest}
                 />

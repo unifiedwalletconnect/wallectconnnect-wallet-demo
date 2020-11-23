@@ -2,7 +2,7 @@ import * as React from "react";
 import styled from "styled-components";
 
 import Blockie from "./Blockie";
-import { ellipseAddress, getChainData } from "../helpers/utilities";
+import { ellipseAddress, getNetworkData } from "../helpers/utilities";
 import { fonts, responsive, transitions } from "../styles";
 
 const SHeader = styled.div`
@@ -77,25 +77,26 @@ const SDisconnect = styled.div<IHeaderStyle>`
 interface IHeaderProps {
   killSession: () => void;
   connected: boolean;
-  address: string;
-  chainId: number;
+  chain: string;
+  network: string;
+  account: string;
 }
 
 const Header = (props: IHeaderProps) => {
-  const { connected, address, chainId, killSession } = props;
-  const activeChain = chainId ? getChainData(chainId).name : null;
+  const { connected, chain, network, account, killSession } = props;
+  const networkName = chain && network ? getNetworkData(chain, network).name : null;
   return (
     <SHeader {...props}>
-      {activeChain && (
+      {networkName && (
         <SActiveChain>
           <p>{`Connected to`}</p>
-          <p>{activeChain}</p>
+          <p>{networkName}</p>
         </SActiveChain>
       )}
-      {address && (
+      {account && (
         <SActiveAccount>
-          <SBlockie address={address} />
-          <SAddress connected={connected}>{ellipseAddress(address)}</SAddress>
+          <SBlockie account={account} />
+          <SAddress connected={connected}>{ellipseAddress(account)}</SAddress>
           <SDisconnect connected={connected} onClick={killSession}>
             {"Disconnect"}
           </SDisconnect>
